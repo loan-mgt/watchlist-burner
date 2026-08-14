@@ -11,7 +11,6 @@ import (
 
 	"golang.org/x/net/websocket"
 
-	"watchlist-burner/internal/jellyfin"
 	"watchlist-burner/internal/letterboxd"
 	"watchlist-burner/internal/server"
 )
@@ -39,8 +38,8 @@ func main() {
 	cacheTTL := flag.Duration("cache-ttl", defaultTTL(), "letterboxd watchlist cache lifetime")
 	flag.Parse()
 
-	store := jellyfin.NewSessionStore()
-	srv := server.New(store, letterboxd.NewScraper(), *cacheTTL)
+	burner := server.NewBurner(server.NewJellyfinLibrary(), letterboxd.NewScraper(), *cacheTTL)
+	srv := server.New(burner, letterboxd.NewPosterResolver())
 
 	templates, err := fs.Sub(webFS, "web/templates")
 	if err != nil {
@@ -55,6 +54,7 @@ func main() {
 	mux.HandleFunc("/api/login", srv.HandleLogin)
 	mux.HandleFunc("/api/logout", srv.HandleLogout)
 	mux.HandleFunc("/api/watchlist", srv.HandleWatchlist)
+	mux.HandleFunc("/api/poster", srv.HandlePoster)
 	mux.Handle("/api/watchlist/ws", websocket.Server{
 		Handshake: func(*websocket.Config, *http.Request) error { return nil },
 		Handler:   srv.HandleWatchlistWS,

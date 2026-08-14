@@ -43,30 +43,6 @@ func (s *Server) HandleWatchlistWS(ws *websocket.Conn) {
 		return
 	}
 
-	sess := s.store.Get()
-	if sess == nil {
-		sendWS(ws, wsMessage{Type: "auth"})
-		return
-	}
-
-	// Serve a warm cache before the refresh semaphore so a refresh is never
-	// blocked behind an in-flight build (which can otherwise hold the
-	// semaphore for the whole build duration).
-	if films, meta, ok := s.cache.get(lbUser); ok {
-		sendWS(ws, wsMessage{Type: "result", Films: films, Meta: meta})
-		return
-	}
-
-	// Reuse the same lock as the HTTP path so a build isn't run twice.
-	s.refreshSem <- struct{}{}
-	defer func() { <-s.refreshSem }()
-
-	// Re-check under lock: another request may have refreshed meanwhile.
-	if films, meta, ok := s.cache.get(lbUser); ok {
-		sendWS(ws, wsMessage{Type: "result", Films: films, Meta: meta})
-		return
-	}
-
 	// Cancel the build as soon as the client disconnects so the refresh
 	// semaphore is released promptly instead of being held until the whole
 	// build finishes. The browser never sends frames after connecting, so
@@ -87,14 +63,13 @@ func (s *Server) HandleWatchlistWS(ws *websocket.Conn) {
 
 	// Stream only every 100th movie to the browser; the frontend derives the
 	// exact count and progress from the index/total carried in each frame.
-	films, meta, err := s.build(ctx, lbUser, func(index, total int, it jellyfin.Item) {
+	resp, err := s.burner.Burn(ctx, lbUser, func(index, total int, it jellyfin.Item) {
 		if index%100 == 0 {
 			sendWS(ws, wsMessage{Type: "film", Title: it.Name, Year: yearOf(it), Slug: it.ID, Index: index, Total: total})
 		}
 	})
 	if err != nil {
 		if errors.Is(err, jellyfin.ErrSessionExpired) {
-			s.store.Clear()
 			sendWS(ws, wsMessage{Type: "auth"})
 			return
 		}
@@ -103,7 +78,5 @@ func (s *Server) HandleWatchlistWS(ws *websocket.Conn) {
 		return
 	}
 
-	s.cache.put(lbUser, films, meta)
-
-	sendWS(ws, wsMessage{Type: "result", Films: films, Meta: meta})
+	sendWS(ws, wsMessage{Type: "result", Films: resp.Films, Meta: resp})
 }

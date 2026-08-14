@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log"
 	"net/http"
-	"sort"
 	"strings"
 	"time"
 
@@ -32,25 +31,14 @@ type watchlistResponse struct {
 	Watched int             `json:"watched"`
 }
 
-// Server wires the HTTP handlers together.
+// Server exposes the Burner module over HTTP and WebSocket transports.
 type Server struct {
-	store   *jellyfin.SessionStore
-	scraper *letterboxd.Scraper
-	cache   *watchlistCache
-
-	refreshSem chan struct{} // capacity-1 semaphore serializing watchlist refresh
+	burner   *Burner
+	resolver *letterboxd.PosterResolver
 }
 
-func New(store *jellyfin.SessionStore, scraper *letterboxd.Scraper, cacheTTL time.Duration) *Server {
-	if cacheTTL <= 0 {
-		cacheTTL = time.Hour
-	}
-	return &Server{
-		store:      store,
-		scraper:    scraper,
-		cache:      &watchlistCache{ttl: cacheTTL},
-		refreshSem: make(chan struct{}, 1),
-	}
+func New(burner *Burner, resolver *letterboxd.PosterResolver) *Server {
+	return &Server{burner: burner, resolver: resolver}
 }
 
 func (s *Server) HandleLogin(w http.ResponseWriter, r *http.Request) {
@@ -73,12 +61,10 @@ func (s *Server) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	client := jellyfin.NewClient(req.JellyfinURL)
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
-	sess, err := client.Authenticate(ctx, req.Username, req.Password)
-	if err != nil {
+	if err := s.burner.Login(ctx, req.JellyfinURL, req.Username, req.Password); err != nil {
 		if errors.Is(err, jellyfin.ErrBadCredentials) {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid username or password"})
 			return
@@ -87,9 +73,6 @@ func (s *Server) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "could not reach Jellyfin"})
 		return
 	}
-
-	s.store.Set(sess)
-	s.cache.invalidate()
 	writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
 }
 
@@ -98,8 +81,7 @@ func (s *Server) HandleLogout(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	s.store.Clear()
-	s.cache.invalidate()
+	s.burner.Logout()
 	writeJSON(w, http.StatusOK, map[string]string{"ok": "true"})
 }
 
@@ -110,32 +92,9 @@ func (s *Server) HandleWatchlist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sess := s.store.Get()
-	if sess == nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "not logged in to Jellyfin"})
-		return
-	}
-
-	// Cache is keyed by letterboxd username only; watched-state is recomputed
-	// cheaply when the Jellyfin library refresh re-runs (TTL-based).
-	if films, meta, ok := s.cache.get(lbUser); ok {
-		writeJSON(w, http.StatusOK, map[string]any{"films": films, "meta": meta})
-		return
-	}
-
-	s.refreshSem <- struct{}{}
-	defer func() { <-s.refreshSem }()
-
-	// Re-check under lock: another request may have refreshed meanwhile.
-	if films, meta, ok := s.cache.get(lbUser); ok {
-		writeJSON(w, http.StatusOK, map[string]any{"films": films, "meta": meta})
-		return
-	}
-
-	films, watched, err := s.build(r.Context(), lbUser, nil)
+	resp, err := s.burner.Burn(r.Context(), lbUser, nil)
 	if err != nil {
 		if errors.Is(err, jellyfin.ErrSessionExpired) {
-			s.store.Clear()
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "Jellyfin session expired, please log in again"})
 			return
 		}
@@ -144,92 +103,22 @@ func (s *Server) HandleWatchlist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.cache.put(lbUser, films, watched)
-
-	writeJSON(w, http.StatusOK, map[string]any{"films": films, "meta": watched})
+	writeJSON(w, http.StatusOK, map[string]any{"films": resp.Films, "meta": resp})
 }
 
-// build fetches the Letterboxd watchlist, matches against the Jellyfin library,
-// and returns the films to display (watched ones filtered out). onItem, if
-// non-nil, is called with each Jellyfin library movie's index, the total
-// record count, and the movie as it is fetched.
-func (s *Server) build(ctx context.Context, lbUser string, onItem func(index, total int, it jellyfin.Item)) ([]WatchlistFilm, *watchlistResponse, error) {
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+// HandlePoster resolves a film's poster URL on demand. The frontend falls
+// back here when a constructed CDN URL is missing or fails to load.
+func (s *Server) HandlePoster(w http.ResponseWriter, r *http.Request) {
+	slug := strings.TrimSpace(r.URL.Query().Get("slug"))
+	if slug == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "missing slug query param"})
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
 
-	sess := s.store.Get()
-	if sess == nil {
-		return nil, nil, jellyfin.ErrSessionExpired
-	}
-
-	lbFilms, err := s.scraper.Watchlist(ctx, lbUser)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	client := jellyfin.NewClient(sess.JellyfinURL)
-	movies, err := client.Movies(ctx, sess, distinctYears(lbFilms), onItem)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	matcher := NewMatcher(movies)
-
-	films := make([]WatchlistFilm, 0, len(lbFilms))
-	matched := 0
-	watched := 0
-	for _, f := range lbFilms {
-		item := matcher.Match(f)
-		wf := WatchlistFilm{
-			Slug:          f.Slug,
-			Title:         f.Title,
-			Year:          f.Year,
-			PosterURL:     f.PosterURL,
-			LetterboxdURL: f.URL,
-		}
-		if item != nil {
-			wf.InLibrary = true
-			wf.ItemID = item.ID
-			matched++
-			if item.UserData != nil && item.UserData.Played {
-				watched++
-				continue // hide watched films
-			}
-		}
-		films = append(films, wf)
-	}
-
-	// In-library films first, preserving Letterboxd order within each group.
-	sort.SliceStable(films, func(i, j int) bool {
-		return films[i].InLibrary && !films[j].InLibrary
-	})
-
-	meta := &watchlistResponse{
-		Films:   films,
-		Total:   len(lbFilms),
-		Matched: matched,
-		Watched: watched,
-	}
-	return films, meta, nil
-}
-
-// distinctYears returns the sorted unique production years (ignoring 0, i.e.
-// films whose year failed to parse) from a Letterboxd watchlist. Jellyfin
-// items are filtered by these years so only library movies that could match
-// are fetched.
-func distinctYears(films []letterboxd.Film) []int {
-	seen := make(map[int]struct{})
-	for _, f := range films {
-		if f.Year > 0 {
-			seen[f.Year] = struct{}{}
-		}
-	}
-	years := make([]int, 0, len(seen))
-	for y := range seen {
-		years = append(years, y)
-	}
-	sort.Ints(years)
-	return years
+	writeJSON(w, http.StatusOK, map[string]string{"posterUrl": s.resolver.Resolve(ctx, slug)})
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

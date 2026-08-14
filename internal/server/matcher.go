@@ -7,9 +7,11 @@ import (
 	"watchlist-burner/internal/letterboxd"
 )
 
-// Matcher matches Letterboxd films to Jellyfin items by normalized title + year.
+// Matcher matches Letterboxd films to Jellyfin items by normalized title +
+// year, falling back to title alone when a film's year is unknown.
 type Matcher struct {
-	byKey map[matchKey][]jellyfin.Item
+	byKey   map[matchKey][]jellyfin.Item
+	byTitle map[string][]jellyfin.Item
 }
 
 // matchKey is the identity used to join Letterboxd films with Jellyfin items:
@@ -20,24 +22,41 @@ type matchKey struct {
 }
 
 func NewMatcher(movies []jellyfin.Item) *Matcher {
-	m := &Matcher{byKey: make(map[matchKey][]jellyfin.Item)}
+	m := &Matcher{
+		byKey:   make(map[matchKey][]jellyfin.Item),
+		byTitle: make(map[string][]jellyfin.Item),
+	}
 	for _, it := range movies {
-		k := keyOf(it.Name, yearOf(it))
-		if k.norm == "" {
+		norm := normalize(it.Name)
+		if norm == "" {
 			continue
 		}
+		k := matchKey{norm: norm, year: yearOf(it)}
 		m.byKey[k] = append(m.byKey[k], it)
+		m.byTitle[norm] = append(m.byTitle[norm], it)
 	}
 	return m
 }
 
-// Match returns the Jellyfin item for a Letterboxd film, if found.
+// Match returns the Jellyfin item for a Letterboxd film, if found. Films
+// whose year failed to parse match by normalized title alone.
 func (m *Matcher) Match(f letterboxd.Film) *jellyfin.Item {
-	k := keyOf(f.Title, f.Year)
-	if k.norm == "" {
+	norm := normalize(f.Title)
+	if norm == "" {
 		return nil
 	}
-	items := m.byKey[k]
+	if f.Year > 0 {
+		if it := firstOf(m.byKey[matchKey{norm: norm, year: f.Year}]); it != nil {
+			return it
+		}
+		return nil
+	}
+	return firstOf(m.byTitle[norm])
+}
+
+// firstOf returns the first item in the slice, or nil when empty. Ties are
+// broken by Jellyfin's item order.
+func firstOf(items []jellyfin.Item) *jellyfin.Item {
 	if len(items) == 0 {
 		return nil
 	}

@@ -214,31 +214,3 @@ var (
 	ErrBadCredentials = fmt.Errorf("jellyfin: invalid username or password")
 	ErrSessionExpired = fmt.Errorf("jellyfin: session expired")
 )
-
-// SessionStore holds one authenticated session in memory.
-type SessionStore struct {
-	mu      sync.RWMutex
-	session *Session
-}
-
-func NewSessionStore() *SessionStore {
-	return &SessionStore{}
-}
-
-func (s *SessionStore) Set(sess *Session) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.session = sess
-}
-
-func (s *SessionStore) Get() *Session {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.session
-}
-
-func (s *SessionStore) Clear() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.session = nil
-}

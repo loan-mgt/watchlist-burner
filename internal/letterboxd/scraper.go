@@ -9,7 +9,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 
 	"golang.org/x/net/html"
 )
@@ -32,7 +31,6 @@ type Film struct {
 var (
 	fullNameRe = regexp.MustCompile(`^(.*?)\s+\((\d{4})\)$`)
 	uidRe      = regexp.MustCompile(`"uid":"film:(\d+)"`)
-	posterJSON = regexp.MustCompile(`"image":"(https://a\.ltrbxd\.com/resized/[^"]+-0-600-0-900-crop\.jpg[^"]*)"`)
 )
 
 // Scraper fetches and parses Letterboxd watchlist pages.
@@ -45,9 +43,8 @@ func NewScraper() *Scraper {
 }
 
 // Watchlist returns every film on a user's watchlist, walking all pages.
-// Posters come from the constructed CDN URL where possible; films whose
-// constructed URL is invalid (custom uploads, renamed slugs) fall back to
-// the film page's JSON-LD image.
+// PosterURL holds the constructed CDN URL where one can be derived; films
+// whose URL is missing or invalid are resolved lazily via PosterResolver.
 func (s *Scraper) Watchlist(ctx context.Context, username string) ([]Film, error) {
 	var films []Film
 	page := 1
@@ -62,108 +59,7 @@ func (s *Scraper) Watchlist(ctx context.Context, username string) ([]Film, error
 		}
 		page++
 	}
-	s.resolvePosters(ctx, films)
 	return films, nil
-}
-
-// resolvePosters fills in PosterURL for any film missing one. It first
-// verifies the constructed CDN URL (cheap HEAD to the image CDN); for films
-// whose constructed URL is invalid it falls back to the film page's JSON-LD
-// image, rewritten to a small crop. Falls back to empty-poster placeholder.
-func (s *Scraper) resolvePosters(ctx context.Context, films []Film) {
-	// Phase 1: HEAD-check all constructed URLs in parallel.
-	needsFilm := make([]int, 0, len(films))
-	var mu sync.Mutex
-	var wg sync.WaitGroup
-	sem := make(chan struct{}, 8)
-	for i := range films {
-		f := &films[i]
-		if f.PosterURL == "" {
-			mu.Lock()
-			needsFilm = append(needsFilm, i)
-			mu.Unlock()
-			continue
-		}
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(idx int) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			ok := s.headOK(ctx, films[idx].PosterURL)
-			if !ok {
-				mu.Lock()
-				needsFilm = append(needsFilm, idx)
-				mu.Unlock()
-			}
-		}(i)
-	}
-	wg.Wait()
-
-	if len(needsFilm) == 0 {
-		return
-	}
-
-	// Phase 2: fetch film pages for the remaining films.
-	var wg2 sync.WaitGroup
-	sem2 := make(chan struct{}, 4)
-	for _, idx := range needsFilm {
-		f := &films[idx]
-		wg2.Add(1)
-		sem2 <- struct{}{}
-		go func() {
-			defer wg2.Done()
-			defer func() { <-sem2 }()
-			f.PosterURL = s.filmPoster(ctx, f.Slug)
-		}()
-	}
-	wg2.Wait()
-}
-
-func (s *Scraper) headOK(ctx context.Context, url string) bool {
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, url, nil)
-	if err != nil {
-		return false
-	}
-	req.Header.Set("User-Agent", userAgent)
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return false
-	}
-	resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
-}
-
-// filmPoster fetches a film page and extracts its poster from JSON-LD,
-// rewritten to a small crop. Returns empty string on any failure.
-func (s *Scraper) filmPoster(ctx context.Context, slug string) string {
-	u := fmt.Sprintf("%s/film/%s/", baseURL, slug)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	if err != nil {
-		return ""
-	}
-	req.Header.Set("User-Agent", userAgent)
-	resp, err := s.client.Do(req)
-	if err != nil {
-		return ""
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return ""
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return ""
-	}
-	if m := posterJSON.FindSubmatch(body); len(m) == 2 {
-		return smallCrop(string(m[1]))
-	}
-	return ""
-}
-
-// smallCrop rewrites a poster URL's crop suffix to a 125x187 thumbnail.
-func smallCrop(u string) string {
-	re := regexp.MustCompile(`-0-\d+-0-\d+-crop\.jpg`)
-	return re.ReplaceAllString(u, "-0-125-0-187-crop.jpg")
 }
 
 func (s *Scraper) watchlistPage(ctx context.Context, username string, page int) ([]Film, bool, error) {

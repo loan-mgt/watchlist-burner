@@ -133,6 +133,22 @@ function renderGrid(films, meta) {
 	}
 }
 
+const FALLBACK_POSTER = "https://s.ltrbxd.com/static/img/empty-poster-125-AiuBHVCI.png";
+
+// resolvePoster fills an <img> from the server's lazy poster endpoint, which
+// fetches the film page's JSON-LD image. Falls back to the empty-poster
+// placeholder when the server can't produce one.
+async function resolvePoster(slug, img) {
+	let res, data;
+	try {
+		({ res, data } = await api(`/api/poster?slug=${encodeURIComponent(slug)}`));
+	} catch {
+		img.src = FALLBACK_POSTER;
+		return;
+	}
+	img.src = (res.ok && data.posterUrl) ? data.posterUrl : FALLBACK_POSTER;
+}
+
 function buildInner(f) {
 	const wrap = document.createElement("div");
 	wrap.style.position = "relative";
@@ -145,10 +161,20 @@ function buildInner(f) {
 	}
 
 	const img = document.createElement("img");
-	img.src = f.posterUrl;
 	img.alt = `${f.title} - ${f.year}`;
 	img.loading = "lazy";
-	img.onerror = () => { img.src = "https://s.ltrbxd.com/static/img/empty-poster-125-AiuBHVCI.png"; };
+	img.onerror = () => {
+		if (img.dataset.retry) {
+			img.src = FALLBACK_POSTER;
+			return;
+		}
+		img.dataset.retry = "1";
+		resolvePoster(f.slug, img);
+	};
+	img.src = f.posterUrl || "";
+	if (!f.posterUrl) {
+		resolvePoster(f.slug, img);
+	}
 	wrap.appendChild(img);
 
 	return wrap;
