@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Watchlist Burner</title>
+<link rel="icon" type="image/png" href="/static/icon.png">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+	<h1 class="logo">Watchlist <img src="/static/icon.png" class="logo-icon" alt=""></h1>
+	<div class="actions">
+		<span id="status" class="status"></span>
+		<button id="refreshBtn" class="btn" hidden>Refresh</button>
+		<button id="logoutBtn" class="btn btn-ghost" hidden>Log out</button>
+	</div>
+</header>
+
+<section id="setupView" class="view" hidden>
+	<div class="card">
+		<h2>Connect</h2>
+		<p class="hint">Your Jellyfin server and usernames stay in this browser. Your password goes straight to this app's backend, which uses it to open a short-lived Jellyfin session.</p>
+		<form id="setupForm">
+			<label>Jellyfin server URL
+				<input type="url" name="jellyfinUrl" placeholder="http://192.168.1.10:8096" required>
+			</label>
+			<label>Jellyfin username
+				<input type="text" name="jellyfinUser" autocomplete="username" required>
+			</label>
+			<label>Letterboxd username
+				<input type="text" name="letterboxdUser" autocomplete="username" required>
+			</label>
+			<label>Jellyfin password
+				<input type="password" name="jellyfinPassword" autocomplete="current-password" required>
+			</label>
+			<button type="submit" class="btn btn-primary">Load watchlist</button>
+		</form>
+		<p id="setupError" class="error" hidden></p>
+	</div>
+</section>
+
+<section id="loginView" class="view" hidden>
+	<div class="card">
+		<h2>Log in to Jellyfin</h2>
+		<p class="hint">Your Jellyfin session expired. Re-enter your password to continue.</p>
+		<form id="loginForm">
+			<label>Jellyfin password
+				<input type="password" name="jellyfinPassword" autocomplete="current-password" required>
+			</label>
+			<button type="submit" class="btn btn-primary">Connect</button>
+		</form>
+		<p id="loginError" class="error" hidden></p>
+	</div>
+</section>
+
+<section id="loadingView" class="view" hidden>
+	<div class="loading">
+		<div class="spinner"></div>
+		<p id="loadingText" class="loading-text">Wait, you've watched how many?!</p>
+		<p id="loadingDetail" class="loading-detail">400 movies in your library so far — e.g. "Dark Waters"</p>
+	</div>
+</section>
+
+<section id="gridView" class="view" hidden>
+	<div id="grid" class="grid"></div>
+	<p id="empty" class="empty" hidden></p>
+</section>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

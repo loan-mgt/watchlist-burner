@@ -1,0 +1,10 @@
+services:
+  watchlist-burner:
+    build: .
+    image: localhost/watchlist-burner:latest
+    container_name: watchlist-burner
+    restart: unless-stopped
+    ports:
+      - "8097:8097"
+    environment:
+      - CACHE_TTL=1h
