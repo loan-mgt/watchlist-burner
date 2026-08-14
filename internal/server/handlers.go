@@ -151,8 +151,9 @@ func (s *Server) HandleWatchlist(w http.ResponseWriter, r *http.Request) {
 
 // build fetches the Letterboxd watchlist, matches against the Jellyfin library,
 // and returns the films to display (watched ones filtered out). onItem, if
-// non-nil, is called with each Jellyfin library movie as it is fetched.
-func (s *Server) build(ctx context.Context, lbUser string, onItem func(jellyfin.Item)) ([]WatchlistFilm, *watchlistResponse, error) {
+// non-nil, is called with each Jellyfin library movie's index, the total
+// record count, and the movie as it is fetched.
+func (s *Server) build(ctx context.Context, lbUser string, onItem func(index, total int, it jellyfin.Item)) ([]WatchlistFilm, *watchlistResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 
@@ -167,7 +168,7 @@ func (s *Server) build(ctx context.Context, lbUser string, onItem func(jellyfin.
 	}
 
 	client := jellyfin.NewClient(sess.JellyfinURL)
-	movies, err := client.Movies(ctx, sess, onItem)
+	movies, err := client.Movies(ctx, sess, distinctYears(lbFilms), onItem)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -210,6 +211,25 @@ func (s *Server) build(ctx context.Context, lbUser string, onItem func(jellyfin.
 		Watched: watched,
 	}
 	return films, meta, nil
+}
+
+// distinctYears returns the sorted unique production years (ignoring 0, i.e.
+// films whose year failed to parse) from a Letterboxd watchlist. Jellyfin
+// items are filtered by these years so only library movies that could match
+// are fetched.
+func distinctYears(films []letterboxd.Film) []int {
+	seen := make(map[int]struct{})
+	for _, f := range films {
+		if f.Year > 0 {
+			seen[f.Year] = struct{}{}
+		}
+	}
+	years := make([]int, 0, len(seen))
+	for y := range seen {
+		years = append(years, y)
+	}
+	sort.Ints(years)
+	return years
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

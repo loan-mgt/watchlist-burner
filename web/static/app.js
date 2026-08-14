@@ -34,6 +34,7 @@ function showView(name) {
 	for (const [key, el] of Object.entries(views)) {
 		el.hidden = key !== name;
 	}
+	$("#statusBar").hidden = name !== "grid";
 }
 
 function setStatus(text) {
@@ -55,14 +56,54 @@ async function api(path, options = {}) {
 	return { res, data };
 }
 
+// renderStatusBar fills the fixed-size topbar bar by movie type. Hovering a
+// colored segment reveals its count and meaning. Replaces the old text
+// summary.
+function renderStatusBar(meta) {
+	const bar = $("#statusBar");
+	if (!meta) {
+		bar.hidden = true;
+		return;
+	}
+	const total = meta.total || 0;
+	const watched = meta.watched;
+	const inLib = meta.matched - meta.watched;
+	const noLib = total - meta.matched;
+
+	const setSeg = (id, label, n) => {
+		const seg = $(id);
+		seg.style.width = total ? `${(n / total) * 100}%` : "0%";
+		let tip = seg.querySelector(".statusbar-tip");
+		if (!tip) {
+			tip = document.createElement("span");
+			tip.className = "statusbar-tip";
+			seg.appendChild(tip);
+		}
+		tip.textContent = `${label}: ${n}`;
+	};
+	setSeg("#barWatched", "Watched", watched);
+	setSeg("#barLibrary", "In library", inLib);
+	setSeg("#barNolib", "Not in library", noLib);
+
+	const segs = [$("#barWatched"), $("#barLibrary"), $("#barNolib")];
+	const visible = segs.filter(s => s.style.width !== "0%");
+	segs.forEach(s => { s.style.borderRadius = "0"; });
+	if (visible.length === 1) {
+		visible[0].style.borderRadius = "5px";
+	} else if (visible.length > 1) {
+		visible[0].style.borderRadius = "5px 0 0 5px";
+		visible[visible.length - 1].style.borderRadius = "0 5px 5px 0";
+	}
+
+	bar.hidden = false;
+	setStatus("");
+}
+
 function renderGrid(films, meta) {
 	const grid = $("#grid");
 	grid.innerHTML = "";
 
-	if (meta) {
-		const seen = films.length + meta.watched;
-		setStatus(`${films.length} to watch · ${meta.watched} watched (hidden) · ${meta.total - meta.matched} not in library`);
-	}
+	renderStatusBar(meta);
 
 	if (!films.length) {
 		$("#empty").textContent = "Nothing to watch — your whole watchlist is either watched or missing from Jellyfin.";
@@ -115,8 +156,46 @@ function buildInner(f) {
 
 let loadingTimer = null;
 
+const PROGRESS_CIRC = 2 * Math.PI * 52;
+const SCRAPE_TARGET = 33;
+let progressRaf = null;
+
+function setProgress(pct) {
+	$("#progressFill").classList.remove("indeterminate");
+	pct = Math.max(0, Math.min(100, pct));
+	$("#progressFill").style.strokeDashoffset = PROGRESS_CIRC * (1 - pct / 100);
+	$("#progressPct").textContent = `${Math.round(pct)}%`;
+}
+
+function stopScrapeProgress() {
+	if (progressRaf) {
+		cancelAnimationFrame(progressRaf);
+		progressRaf = null;
+	}
+}
+
+// startScrapeProgress ramps the ring toward 1/3 while the Letterboxd
+// watchlist is scraped (that phase has no known total), then holds there.
+// The remaining 2/3 is driven by real Jellyfin counts once film frames flow.
+function startScrapeProgress() {
+	stopScrapeProgress();
+	let pct = 0;
+	setProgress(0);
+	const step = () => {
+		pct += (SCRAPE_TARGET - pct) * 0.02;
+		if (pct >= SCRAPE_TARGET - 0.5) {
+			setProgress(SCRAPE_TARGET);
+			return;
+		}
+		setProgress(pct);
+		progressRaf = requestAnimationFrame(step);
+	};
+	step();
+}
+
 function startLoading() {
 	showView("loading");
+	startScrapeProgress();
 	const el = $("#loadingText");
 	let i = 0;
 	el.textContent = LOADING_MESSAGES[0];
@@ -128,6 +207,7 @@ function startLoading() {
 }
 
 function stopLoading() {
+	stopScrapeProgress();
 	clearInterval(loadingTimer);
 	loadingTimer = null;
 }
@@ -138,6 +218,7 @@ function showLoadingDetail(text) {
 
 function handleResult(data) {
 	stopLoading();
+	setProgress(100);
 	if (data.error) {
 		showError("#setupError", data.error);
 		showView("setup");
@@ -152,7 +233,6 @@ function handleResult(data) {
 	}
 	renderGrid(data.films, data.meta);
 	showView("grid");
-	$("#refreshBtn").hidden = false;
 	$("#logoutBtn").hidden = false;
 }
 
@@ -162,7 +242,16 @@ async function loadWatchlist() {
 	showError("#loginError", "");
 	startLoading();
 
-	const { res, data } = await api(`/api/watchlist?lbuser=${encodeURIComponent(state.letterboxdUser)}`);
+	let res, data;
+	try {
+		({ res, data } = await api(`/api/watchlist?lbuser=${encodeURIComponent(state.letterboxdUser)}`));
+	} catch {
+		stopLoading();
+		showError("#setupError", "Could not reach the server.");
+		showView("setup");
+		setStatus("");
+		return;
+	}
 	stopLoading();
 	if (res.status === 401) {
 		showView("login");
@@ -179,15 +268,38 @@ async function loadWatchlist() {
 }
 
 // loadWatchlistWS streams real progress over a WebSocket and falls back to
-// the plain HTTP endpoint if the socket can't be used.
+// the plain HTTP endpoint if the socket can't be used or goes quiet. The
+// idle timeout (reset on every frame) is what saves the page from hanging
+// forever when the server accepts the handshake but never sends anything.
 function loadWatchlistWS() {
 	return new Promise((resolve) => {
 		const ws = new WebSocket(`${location.origin.replace(/^http/, "ws")}/api/watchlist/ws?lbuser=${encodeURIComponent(state.letterboxdUser)}`);
-		let filmCount = 0;
 		let lastTitle = "";
+		let settled = false;
+		let idleTimer = null;
+
+		const finish = (result) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(idleTimer);
+			resolve(result);
+		};
+
+		const arm = () => {
+			clearTimeout(idleTimer);
+			idleTimer = setTimeout(() => {
+				if (settled) return;
+				stopLoading();
+				ws.close();
+				finish({ ok: false, wsFailed: true });
+			}, 10000);
+		};
+
+		arm();
 
 		ws.onopen = () => {
 			startLoading();
+			arm();
 		};
 
 		ws.onmessage = (ev) => {
@@ -197,35 +309,53 @@ function loadWatchlistWS() {
 			if (msg.type === "phase") {
 				showLoadingDetail(msg.phase);
 			} else if (msg.type === "film") {
-				filmCount++;
+				stopScrapeProgress();
 				lastTitle = msg.title;
-				showLoadingDetail(`${filmCount} movies in your library so far — e.g. "${lastTitle}"`);
+				if (msg.total > 0) {
+					setProgress(SCRAPE_TARGET + (100 - SCRAPE_TARGET) * (msg.index / msg.total));
+				}
+				showLoadingDetail(lastTitle);
 			} else if (msg.type === "result") {
 				stopLoading();
 				ws.close();
-				resolve({ ok: true, data: { films: msg.films, meta: msg.meta } });
+				finish({ ok: true, data: { films: msg.films, meta: msg.meta } });
+				return;
 			} else if (msg.type === "auth") {
 				stopLoading();
 				ws.close();
 				showView("login");
 				setStatus("Session expired");
-				resolve({ ok: false, auth: true });
+				finish({ ok: false, auth: true });
+				return;
 			} else if (msg.type === "error") {
 				stopLoading();
 				ws.close();
-				resolve({ ok: false, error: msg.error });
+				finish({ ok: false, error: msg.error });
+				return;
 			}
+			arm();
 		};
 
 		ws.onerror = () => {
 			ws.close();
-			resolve({ ok: false, wsFailed: true });
+			finish({ ok: false, wsFailed: true });
+		};
+
+		ws.onclose = () => {
+			if (settled) return;
+			stopLoading();
+			finish({ ok: false, wsFailed: true });
 		};
 	});
 }
 
 async function loadWithWS() {
-	const result = await loadWatchlistWS();
+	let result;
+	try {
+		result = await loadWatchlistWS();
+	} catch {
+		result = { ok: false, wsFailed: true };
+	}
 	if (result.ok) {
 		handleResult(result.data);
 		return;
@@ -278,23 +408,28 @@ $("#loginForm").addEventListener("submit", async (e) => {
 	await doLogin(fd.get("jellyfinPassword"), () => loadWithWS());
 });
 
-$("#refreshBtn").addEventListener("click", () => loadWithWS());
 
 $("#logoutBtn").addEventListener("click", async () => {
 	await api("/api/logout", { method: "POST" });
-	$("#refreshBtn").hidden = true;
 	$("#logoutBtn").hidden = true;
 	showView("login");
 	setStatus("Logged out");
 });
 
 (async function init() {
-	if (!state.jellyfinUrl || !state.jellyfinUser || !state.letterboxdUser) {
+	try {
+		if (!state.jellyfinUrl || !state.jellyfinUser || !state.letterboxdUser) {
+			showView("setup");
+			return;
+		}
+		$("#setupForm").elements.jellyfinUrl.value = state.jellyfinUrl;
+		$("#setupForm").elements.jellyfinUser.value = state.jellyfinUser;
+		$("#setupForm").elements.letterboxdUser.value = state.letterboxdUser;
+		await loadWithWS();
+	} catch (err) {
+		console.error(err);
+		showError("#setupError", "Something went wrong.");
 		showView("setup");
-		return;
+		setStatus("");
 	}
-	$("#setupForm").elements.jellyfinUrl.value = state.jellyfinUrl;
-	$("#setupForm").elements.jellyfinUser.value = state.jellyfinUser;
-	$("#setupForm").elements.letterboxdUser.value = state.letterboxdUser;
-	await loadWithWS();
 })();
