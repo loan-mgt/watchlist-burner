@@ -1,10 +1,35 @@
 services:
   watchlist-burner:
-    build: .
-    image: localhost/watchlist-burner:latest
+    build:
+      context: .
+    image: ghcr.io/loan-mgt/watchlist-burner:latest
     container_name: watchlist-burner
     restart: unless-stopped
     ports:
       - "8097:8097"
     environment:
       - CACHE_TTL=1h
+      - LOG_FORMAT=json
+      - RATE_LIMIT_PER_MINUTE=30
+      # Jellyfin on a private network (self-hosted / LAN):
+      # - ALLOW_PRIVATE_JELLYFIN=true
+      # - ALLOW_INSECURE_JELLYFIN=true
+      # Optional hard allowlist of Jellyfin hostnames:
+      # - ALLOWED_JELLYFIN_HOSTS=jellyfin.example.com
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/watchlist-burner", "-healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 256M

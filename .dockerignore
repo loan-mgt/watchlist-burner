@@ -1,6 +1,8 @@
 .git
 .gitignore
+.github
 watchlist-burner
 compose.yaml
-cmd
 *.md
+web/node_modules
+web/dist
