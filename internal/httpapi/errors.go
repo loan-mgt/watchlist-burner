@@ -10,6 +10,7 @@ import (
 	"watchlist-burner/internal/burner"
 	"watchlist-burner/internal/jellyfin"
 	"watchlist-burner/internal/letterboxd"
+	"watchlist-burner/internal/seerr"
 )
 
 // apiError is an error with a stable machine-readable code and HTTP status.
@@ -40,6 +41,8 @@ func classify(err error) (status int, code, message string) {
 		return http.StatusUnauthorized, "jellyfin_unauthorized", "Jellyfin rejected the session, please sign in again."
 	case errors.Is(err, letterboxd.ErrWatchlistNotFound):
 		return http.StatusNotFound, "watchlist_not_found", "No Letterboxd watchlist found for that username."
+	case errors.Is(err, seerr.ErrInvalidJellyfinURL):
+		return http.StatusBadRequest, "invalid_server_url", "That Jellyfin server URL is not valid."
 	case errors.Is(err, jellyfin.ErrBlockedAddress):
 		return http.StatusBadRequest, "blocked_address", "That Jellyfin address is not reachable from this server."
 	case errors.Is(err, context.DeadlineExceeded):

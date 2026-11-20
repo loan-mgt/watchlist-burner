@@ -36,6 +36,11 @@ type Config struct {
 	AllowedJellyfinHosts  []string
 	TrustProxyHeaders     bool
 
+	SeerrDiscovery     bool
+	SeerrDeep          bool
+	SeerrPrefixes      []string
+	SeerrScanPerMinute int
+
 	Healthcheck bool
 }
 
@@ -58,6 +63,11 @@ func Load(args []string, getenv func(string) string) (Config, error) {
 		AllowInsecureJellyfin: envBool(getenv, "ALLOW_INSECURE_JELLYFIN", false),
 		AllowedJellyfinHosts:  envList(getenv, "ALLOWED_JELLYFIN_HOSTS"),
 		TrustProxyHeaders:     envBool(getenv, "TRUST_PROXY_HEADERS", true),
+
+		SeerrDiscovery:     envBool(getenv, "SEERR_DISCOVERY", true),
+		SeerrDeep:          envBool(getenv, "SEERR_DISCOVERY_DEEP", false),
+		SeerrPrefixes:      envList(getenv, "SEERR_PREFIXES"),
+		SeerrScanPerMinute: envInt(getenv, "SEERR_SCAN_PER_MINUTE", 6),
 	}
 
 	level, err := parseLevel(envOr(getenv, "LOG_LEVEL", "info"))
@@ -102,6 +112,8 @@ func (c *Config) validate() error {
 		return fmt.Errorf("MAX_ENRICH must not be negative")
 	case c.RateLimitPerMinute < 0:
 		return fmt.Errorf("RATE_LIMIT_PER_MINUTE must not be negative")
+	case c.SeerrScanPerMinute < 0:
+		return fmt.Errorf("SEERR_SCAN_PER_MINUTE must not be negative")
 	case c.MaxBodyBytes <= 0:
 		return fmt.Errorf("MAX_BODY_BYTES must be positive")
 	}

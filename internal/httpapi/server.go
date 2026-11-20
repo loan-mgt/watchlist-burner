@@ -12,6 +12,7 @@ import (
 	"watchlist-burner/internal/burner"
 	"watchlist-burner/internal/config"
 	"watchlist-burner/internal/letterboxd"
+	"watchlist-burner/internal/seerr"
 )
 
 // MetadataSource is the seam to per-film metadata (poster, TMDB id).
@@ -21,25 +22,29 @@ type MetadataSource interface {
 
 // Server is the HTTP adapter over the burner module.
 type Server struct {
-	burner  *burner.Burner
-	meta    MetadataSource
-	cfg     config.Config
-	static  fs.FS
-	log     *slog.Logger
-	limiter *limiter
-	version string
+	burner       *burner.Burner
+	meta         MetadataSource
+	cfg          config.Config
+	static       fs.FS
+	log          *slog.Logger
+	limiter      *limiter
+	seerrLimiter *limiter
+	seerr        *seerr.Discoverer
+	version      string
 }
 
 // New builds the HTTP surface. static is the built web/assets tree.
-func New(b *burner.Burner, meta MetadataSource, cfg config.Config, static fs.FS, log *slog.Logger, version string) *Server {
+func New(b *burner.Burner, meta MetadataSource, cfg config.Config, static fs.FS, log *slog.Logger, version string, discoverer *seerr.Discoverer) *Server {
 	return &Server{
-		burner:  b,
-		meta:    meta,
-		cfg:     cfg,
-		static:  static,
-		log:     log,
-		limiter: newLimiter(cfg.RateLimitPerMinute),
-		version: version,
+		burner:       b,
+		meta:         meta,
+		cfg:          cfg,
+		static:       static,
+		log:          log,
+		limiter:      newLimiter(cfg.RateLimitPerMinute),
+		seerrLimiter: newLimiter(cfg.SeerrScanPerMinute),
+		seerr:        discoverer,
+		version:      version,
 	}
 }
 
@@ -50,6 +55,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/watchlist", s.handleWatchlist)
 	mux.HandleFunc("POST /api/watchlist/stream", s.handleWatchlistStream)
 	mux.HandleFunc("GET /api/poster", s.handlePoster)
+	mux.HandleFunc("POST /api/seerr/discover", s.handleSeerrDiscover)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
 	mux.HandleFunc("GET /readyz", s.handleHealth)
 	mux.Handle("GET /", s.staticHandler())

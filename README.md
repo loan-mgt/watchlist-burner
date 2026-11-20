@@ -42,7 +42,10 @@ go run ./cmd/watchlist-burner
 ```
 
 `web/dist` is committed, so `go build ./cmd/watchlist-burner` works without a
-Node toolchain.
+Node toolchain. The Brotli/gzip variants (`.br`, `.gz`) are generated per build
+and checked in nowhere: they differ between zlib builds, so Docker and local
+builds produce their own and the server falls back to the raw asset when a
+variant is absent.
 
 ## Configuration
 
@@ -64,6 +67,10 @@ Node toolchain.
 | `ALLOW_INSECURE_JELLYFIN` | `false` | Allow `http://` and non-standard ports |
 | `ALLOWED_JELLYFIN_HOSTS` | – | Comma-separated host allowlist |
 | `TRUST_PROXY_HEADERS` | `true` | Honour `X-Forwarded-For` / `X-Forwarded-Proto` |
+| `SEERR_DISCOVERY` | `true` | Probe common Seerr subdomains on demand |
+| `SEERR_DISCOVERY_DEEP` | `false` | Also probe the long-tail host prefixes |
+| `SEERR_PREFIXES` | – | Override the default prefix list |
+| `SEERR_SCAN_PER_MINUTE` | `3` | Per-IP discovery scan limit |
 
 Self-hosting Jellyfin on your LAN behind this app requires
 `ALLOW_PRIVATE_JELLYFIN=true` and usually `ALLOW_INSECURE_JELLYFIN=true`.
@@ -77,6 +84,7 @@ Self-hosting Jellyfin on your LAN behind this app requires
 | `POST` | `/api/watchlist/stream?lbuser=` | NDJSON: `phase`, `film`, `ping`, `result`, `error` |
 | `POST` | `/api/watchlist?lbuser=` | Same input, single JSON response |
 | `GET` | `/api/poster?slug=` | Letterboxd poster fallback (cached) |
+| `POST` | `/api/seerr/discover` | Probe common Seerr subdomains under the Jellyfin domain |
 | `GET` | `/healthz`, `/readyz` | Liveness / readiness |
 | `GET` | `/assets/*` | Hashed assets, immutable, pre-compressed |
 
@@ -102,6 +110,13 @@ X-Jellyfin-User-Id: <user id>
 - **CSP without inline script/style**, `nosniff`, `no-referrer`,
   `frame-ancestors 'none'`, HSTS behind TLS.
 - Upstream error bodies are logged, never echoed to clients.
+- **Seerr discovery** is server-side only (Seerr sends no CORS headers), probes
+  at most a curated prefix list under the Jellyfin host's registrable domain,
+  goes through the SSRF guard, is rate-limited per IP and cached per domain.
+  A candidate only counts when `/api/v1/status` answers with a Seerr version
+  payload; it is then checked against its public settings
+  (`jellyfinExternalHost`) and ranked first when it is linked to the same
+  Jellyfin server.
 - Tokens are never put in URLs or query strings, so they cannot leak through
   logs or `Referer`.
 

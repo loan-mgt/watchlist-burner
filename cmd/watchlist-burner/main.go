@@ -18,6 +18,7 @@ import (
 	"watchlist-burner/internal/httpapi"
 	"watchlist-burner/internal/jellyfin"
 	"watchlist-burner/internal/letterboxd"
+	"watchlist-burner/internal/seerr"
 	"watchlist-burner/web"
 )
 
@@ -66,7 +67,15 @@ func run() error {
 		return fmt.Errorf("embedded assets: %w", err)
 	}
 
-	api := httpapi.New(burn, meta, cfg, assets, log, version)
+	var discoverer *seerr.Discoverer
+	if cfg.SeerrDiscovery {
+		discoverer = seerr.New(guard, jellyfinClient, seerr.Options{
+			Prefixes: cfg.SeerrPrefixes,
+			Deep:     cfg.SeerrDeep,
+		})
+	}
+
+	api := httpapi.New(burn, meta, cfg, assets, log, version, discoverer)
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,

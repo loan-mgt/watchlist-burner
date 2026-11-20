@@ -1,4 +1,4 @@
-import { ApiError, burn } from "./api";
+import { ApiError, burn, discoverSeerr } from "./api";
 import {
   JellyfinError,
   loginWithPassword,
@@ -42,6 +42,7 @@ function readSetup(): Setup | null {
       lbUser: parsed.lbUser,
       jellyfinUrl: normalizeBase(parsed.jellyfinUrl),
       jellyfinUser: parsed.jellyfinUser,
+      seerrUrl: parsed.seerrUrl ? normalizeBase(parsed.seerrUrl) : "",
     };
   } catch {
     return null;
@@ -242,7 +243,7 @@ function handleFrame(frame: Frame): boolean {
     case "result":
       setProgress(100);
       renderStatusBar(frame.meta);
-      renderGrid(frame.films, session?.url ?? "");
+      renderGrid(frame.films, session?.url ?? "", setup?.seerrUrl ?? "");
       showView("grid");
       setStatus("");
       return true;
@@ -288,8 +289,11 @@ el<HTMLFormElement>("setupForm").addEventListener("submit", (event) => {
   const jellyfinUser = String(form.get("jellyfinUser") ?? "").trim();
 
   let url: string;
+  let seerrUrl = "";
   try {
     url = normalizeBase(String(form.get("jellyfinUrl") ?? ""));
+    const rawSeerr = String(form.get("seerrUrl") ?? "").trim();
+    if (rawSeerr) seerrUrl = normalizeBase(rawSeerr);
   } catch (err) {
     showError("setupError", message(err));
     return;
@@ -301,7 +305,7 @@ el<HTMLFormElement>("setupForm").addEventListener("submit", (event) => {
 
   showError("setupError", "");
   const previous = setup;
-  saveSetup({ lbUser, jellyfinUrl: url, jellyfinUser });
+  saveSetup({ lbUser, jellyfinUrl: url, jellyfinUser, seerrUrl });
 
   if (previous && previous.jellyfinUrl !== url) {
     clearSession();
@@ -333,6 +337,8 @@ el<HTMLFormElement>("passwordForm").addEventListener("submit", async (event) => 
   }
 });
 
+el("findSeerrBtn").addEventListener("click", () => void findSeerr());
+
 el("usePasswordBtn").addEventListener("click", () => setMode("password"));
 
 el("useQuickConnectBtn").addEventListener("click", () => {
@@ -356,6 +362,53 @@ function fillSetupForm(value: Setup): void {
   (form.elements.namedItem("letterboxdUser") as HTMLInputElement).value = value.lbUser;
   (form.elements.namedItem("jellyfinUrl") as HTMLInputElement).value = value.jellyfinUrl;
   (form.elements.namedItem("jellyfinUser") as HTMLInputElement).value = value.jellyfinUser;
+  (form.elements.namedItem("seerrUrl") as HTMLInputElement).value = value.seerrUrl;
+}
+
+function showSeerrHint(text: string, warn: boolean): void {
+  const hint = el("seerrHint");
+  hint.textContent = text;
+  hint.classList.toggle("warn", warn);
+  hint.hidden = !text;
+}
+
+async function findSeerr(): Promise<void> {
+  const form = el<HTMLFormElement>("setupForm");
+  const button = el<HTMLButtonElement>("findSeerrBtn");
+  const input = form.elements.namedItem("seerrUrl") as HTMLInputElement;
+
+  let jellyfinUrl: string;
+  try {
+    jellyfinUrl = normalizeBase((form.elements.namedItem("jellyfinUrl") as HTMLInputElement).value);
+  } catch (err) {
+    showSeerrHint(message(err), true);
+    return;
+  }
+
+  const label = button.textContent ?? "Find";
+  button.disabled = true;
+  button.textContent = "Scanning…";
+  showSeerrHint("Looking for Seerr on the usual subdomains…", false);
+
+  try {
+    const result = await discoverSeerr(jellyfinUrl);
+    const [first] = result.instances;
+    if (!first) {
+      showSeerrHint("No Seerr found on the common subdomains. Enter the URL manually if you have one.", true);
+      return;
+    }
+    input.value = first.url;
+    const version = first.version ? ` ${first.version}` : "";
+    const linked = first.verified ? " — linked to your Jellyfin" : "";
+    const others = result.instances.slice(1).map((i) => i.url);
+    const suffix = others.length ? ` (also found: ${others.join(", ")})` : "";
+    showSeerrHint(`Found Seerr${version} at ${first.url}${linked}${suffix}`, false);
+  } catch (err) {
+    showSeerrHint(message(err), true);
+  } finally {
+    button.disabled = false;
+    button.textContent = label;
+  }
 }
 
 function boot(): void {

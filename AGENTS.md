@@ -51,6 +51,11 @@ binary.
 - `internal/burner` — the deep module. Owns the per-user result cache (key =
   `sha256(server|user|lbUser)`), single-flight collapsing, the global scrape
   semaphore, `Authenticate` (URL policy + `/Users/Me`) and `BurnSession`.
+- `internal/seerr` — optional discovery of a Seerr instance: derives
+  `{prefix}.{eTLD+1}` candidates from the Jellyfin host, probes each
+  `GET /api/v1/status` (2xx + `version`/`commitTag`), cancels the rest on the
+  first hit, caches per registrable domain. Seerr has no CORS headers, so this
+  must run server-side through `jellyfin.Guard`.
 - `internal/httpapi` — thin adapters: method-pattern routing, middleware
   (request id, slog access log, panic recovery, security headers, body limit,
   per-IP rate limit), static handler with pre-compressed assets, NDJSON stream.
@@ -83,7 +88,12 @@ binary.
 - Stream frames: `phase`, `film` (every 100th library item), `ping` (5s
   heartbeat), `result`, `error`.
 - Only films that title matching could not resolve trigger a film-page fetch for
-  TMDB enrichment, capped by `MAX_ENRICH`.
+  TMDB enrichment, capped by `MAX_ENRICH`. Their TMDB id is exposed as `tmdbId`
+  so the UI can deep-link `{seerr}/movie/{id}` (falling back to
+  `{seerr}/search?query=` when unknown).
+- Seerr discovery is off if `SEERR_DISCOVERY=false` (the endpoint then answers
+  404). Tier-1 prefixes only, unless `SEERR_DISCOVERY_DEEP=true`; `SEERR_PREFIXES`
+  replaces the tier-1 list entirely.
 
 ## Tests
 

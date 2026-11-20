@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"watchlist-burner/internal/jellyfin"
 	"watchlist-burner/internal/letterboxd"
+	"watchlist-burner/internal/seerr"
 )
 
 func (s *Server) handleConfig(w http.ResponseWriter, _ *http.Request) {
@@ -146,4 +148,51 @@ func yearOf(it jellyfin.Item) int {
 		return 0
 	}
 	return *it.ProductionYear
+}
+
+// handleSeerrDiscover probes the conventional Seerr host names under the
+// Jellyfin server's registrable domain. Seerr sends no CORS headers, so this
+// has to run server-side; the discoverer reuses the Jellyfin SSRF guard and a
+// dedicated, stricter rate limit.
+func (s *Server) handleSeerrDiscover(w http.ResponseWriter, r *http.Request) {
+	if s.seerr == nil {
+		writeJSON(w, http.StatusNotFound, errorBody{
+			Code:    "discovery_disabled",
+			Message: "Seerr discovery is disabled on this server.",
+		})
+		return
+	}
+	if ok, wait := s.seerrLimiter.allow(s.clientIP(r)); !ok {
+		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+		writeJSON(w, http.StatusTooManyRequests, errorBody{
+			Code:    "rate_limited",
+			Message: "Too many discovery scans, please slow down.",
+		})
+		return
+	}
+
+	var req struct {
+		JellyfinURL string `json:"jellyfinUrl"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&req); err != nil {
+		writeError(w, r, s.log, badRequest("invalid_body", "Invalid request body."))
+		return
+	}
+	if strings.TrimSpace(req.JellyfinURL) == "" {
+		writeError(w, r, s.log, badRequest("missing_url", "A Jellyfin server URL is required."))
+		return
+	}
+
+	instances, cached, err := s.seerr.Discover(r.Context(), req.JellyfinURL)
+	if err != nil {
+		writeError(w, r, s.log, err)
+		return
+	}
+	if instances == nil {
+		instances = []seerr.Instance{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"instances": instances,
+		"cached":    cached,
+	})
 }

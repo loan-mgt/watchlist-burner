@@ -62,7 +62,7 @@ export function renderStatusBar(meta: Meta): void {
   set("barNolib", "Not in library", missing);
 }
 
-export function renderGrid(films: Film[], jellyfinUrl: string): void {
+export function renderGrid(films: Film[], jellyfinUrl: string, seerrUrl: string): void {
   const grid = el("grid");
   grid.replaceChildren();
 
@@ -76,12 +76,12 @@ export function renderGrid(films: Film[], jellyfinUrl: string): void {
 
   const fragment = document.createDocumentFragment();
   for (const film of films) {
-    fragment.appendChild(renderCard(film, jellyfinUrl));
+    fragment.appendChild(renderCard(film, jellyfinUrl, seerrUrl));
   }
   grid.appendChild(fragment);
 }
 
-function renderCard(film: Film, jellyfinUrl: string): HTMLElement {
+function renderCard(film: Film, jellyfinUrl: string, seerrUrl: string): HTMLElement {
   const card = document.createElement("div");
   card.className = `poster${film.inLibrary ? "" : " disabled"}`;
 
@@ -116,7 +116,24 @@ function renderCard(film: Film, jellyfinUrl: string): HTMLElement {
     card.appendChild(body);
   }
 
+  if (!film.inLibrary && seerrUrl) {
+    card.appendChild(requestLink(film, seerrUrl));
+  }
+
   return card;
+}
+
+function requestLink(film: Film, seerrUrl: string): HTMLAnchorElement {
+  const link = document.createElement("a");
+  link.className = "request-link";
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.textContent = "Request";
+  link.href = film.tmdbId
+    ? `${seerrUrl}/movie/${encodeURIComponent(film.tmdbId)}`
+    : `${seerrUrl}/search?query=${encodeURIComponent(`${film.title} ${film.year || ""}`.trim())}`;
+  link.setAttribute("aria-label", `Request ${film.title} in Seerr`);
+  return link;
 }
 
 function attachPoster(img: HTMLImageElement, film: Film): void {

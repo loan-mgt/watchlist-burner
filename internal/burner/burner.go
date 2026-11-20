@@ -31,6 +31,7 @@ type Film struct {
 	PosterURL     string `json:"posterUrl,omitempty"`
 	LetterboxdURL string `json:"letterboxdUrl"`
 	ItemID        string `json:"itemId,omitempty"`
+	TmdbID        string `json:"tmdbId,omitempty"`
 	InLibrary     bool   `json:"inLibrary"`
 }
 
@@ -221,6 +222,7 @@ func (b *Burner) build(ctx context.Context, client *jellyfin.Client, userID, lbU
 	type resolved struct {
 		film letterboxd.Film
 		item *jellyfin.Item
+		tmdb string
 	}
 	rows := make([]resolved, len(lbFilms))
 	unmatched := make([]int, 0, len(lbFilms))
@@ -250,6 +252,7 @@ func (b *Burner) build(ctx context.Context, client *jellyfin.Client, userID, lbU
 			if f.PosterURL == "" && meta.PosterURL != "" {
 				f.PosterURL = meta.PosterURL
 			}
+			rows[i].tmdb = meta.TmdbID
 			if it := matcher.MatchTmdb(meta.TmdbID); it != nil {
 				rows[i].item = it
 			}
@@ -266,8 +269,12 @@ func (b *Burner) build(ctx context.Context, client *jellyfin.Client, userID, lbU
 			Year:          f.Year,
 			PosterURL:     f.PosterURL,
 			LetterboxdURL: f.URL,
+			TmdbID:        row.tmdb,
 		}
 		if it := row.item; it != nil {
+			if out.TmdbID == "" {
+				out.TmdbID = it.TmdbID()
+			}
 			out.InLibrary = true
 			out.ItemID = it.ID
 			matched++

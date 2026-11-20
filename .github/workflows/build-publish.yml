@@ -50,6 +50,21 @@ jobs:
         working-directory: web
         run: npm run build
 
+      - name: Verify build manifest
+        run: |
+          test -f web/dist/manifest.json
+          test -f web/dist/index.html
+          node -e '
+            const fs = require("node:fs");
+            const manifest = JSON.parse(fs.readFileSync("web/dist/manifest.json", "utf8"));
+            for (const [key, url] of Object.entries(manifest)) {
+              if (typeof url !== "string" || !url.startsWith("/assets/")) throw new Error("bad manifest entry " + key);
+              const file = "web/dist" + url;
+              if (!fs.existsSync(file)) throw new Error("missing " + file);
+            }
+            console.log("manifest ok:", manifest);
+          '
+
       - name: Verify committed build output is current
         run: git diff --exit-code -- web/dist
 

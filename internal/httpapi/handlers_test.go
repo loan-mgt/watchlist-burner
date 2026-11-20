@@ -17,6 +17,7 @@ import (
 	"watchlist-burner/internal/config"
 	"watchlist-burner/internal/jellyfin"
 	"watchlist-burner/internal/letterboxd"
+	"watchlist-burner/internal/seerr"
 )
 
 type fakeWatchlist struct {
@@ -59,6 +60,11 @@ var testAssets = fstest.MapFS{
 
 func newTestAPI(t *testing.T, cfg config.Config, jf http.HandlerFunc, films []letterboxd.Film) (apiURL, jellyfinURL string) {
 	t.Helper()
+	return newTestAPIWith(t, cfg, jf, films, nil)
+}
+
+func newTestAPIWith(t *testing.T, cfg config.Config, jf http.HandlerFunc, films []letterboxd.Film, discoverer *seerr.Discoverer) (apiURL, jellyfinURL string) {
+	t.Helper()
 
 	jfSrv := httptest.NewServer(jf)
 	t.Cleanup(jfSrv.Close)
@@ -79,7 +85,7 @@ func newTestAPI(t *testing.T, cfg config.Config, jf http.HandlerFunc, films []le
 	)
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := httptest.NewServer(New(burn, fakeMeta{}, cfg, testAssets, logger, "test").Handler())
+	srv := httptest.NewServer(New(burn, fakeMeta{}, cfg, testAssets, logger, "test", discoverer).Handler())
 	t.Cleanup(srv.Close)
 
 	return srv.URL, jfSrv.URL
@@ -393,5 +399,72 @@ func TestHealthEndpoints(t *testing.T) {
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("%s status = %d", path, resp.StatusCode)
 		}
+	}
+}
+
+func TestSeerrDiscoveryDisabled(t *testing.T) {
+	apiURL, _ := newTestAPI(t, testConfig(), fakeJellyfin(t), nil)
+
+	resp, err := http.Post(apiURL+"/api/seerr/discover", "application/json",
+		strings.NewReader(`{"jellyfinUrl":"https://jelly.example.com"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestSeerrDiscoveryRejectsInvalidURL(t *testing.T) {
+	cfg := testConfig()
+	guard := jellyfin.NewGuard(false, false, nil)
+	discoverer := seerr.New(guard, guard.HTTPClient(5*time.Second), seerr.Options{})
+
+	apiURL, _ := newTestAPIWith(t, cfg, fakeJellyfin(t), nil, discoverer)
+
+	resp, err := http.Post(apiURL+"/api/seerr/discover", "application/json",
+		strings.NewReader(`{"jellyfinUrl":"http://insecure.example.com"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	var body errorBody
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Code != "invalid_server_url" {
+		t.Errorf("code = %q", body.Code)
+	}
+}
+
+func TestSeerrDiscoveryReturnsEmptyForIPHost(t *testing.T) {
+	cfg := testConfig()
+	guard := jellyfin.NewGuard(true, true, nil)
+	discoverer := seerr.New(guard, guard.HTTPClient(5*time.Second), seerr.Options{})
+
+	apiURL, _ := newTestAPIWith(t, cfg, fakeJellyfin(t), nil, discoverer)
+
+	resp, err := http.Post(apiURL+"/api/seerr/discover", "application/json",
+		strings.NewReader(`{"jellyfinUrl":"http://127.0.0.1:8096"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var body struct {
+		Instances []seerr.Instance `json:"instances"`
+		Cached    bool             `json:"cached"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Instances) != 0 {
+		t.Errorf("instances = %+v, want none for an IP host", body.Instances)
 	}
 }

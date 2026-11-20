@@ -2,6 +2,7 @@ export interface Setup {
   lbUser: string;
   jellyfinUrl: string;
   jellyfinUser: string;
+  seerrUrl: string;
 }
 
 export interface Session {
@@ -19,6 +20,7 @@ export interface Film {
   posterUrl?: string;
   letterboxdUrl: string;
   itemId?: string;
+  tmdbId?: string;
   inLibrary: boolean;
 }
 

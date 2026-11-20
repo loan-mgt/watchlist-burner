@@ -1,2 +1,4 @@
 /watchlist-burner
 web/node_modules
+web/dist/**/*.gz
+web/dist/**/*.br

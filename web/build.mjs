@@ -80,14 +80,10 @@ for (const file of files) {
   compressed += (await stat(`${file}.br`)).size;
 }
 
-const manifest = {
-  app: appJs,
-  style: styleCss,
-  logo: logoUrl,
-  bytes: total,
-  bytesBrotli: compressed,
-};
-await writeFile(path.join(dist, "manifest.json"), JSON.stringify(manifest, null, 2));
+// Keep the manifest free of build-dependent numbers: it is committed, and
+// sizes differ between zlib builds (see the .gz/.br ignore rules).
+const manifest = { app: appJs, style: styleCss, logo: logoUrl };
+await writeFile(path.join(dist, "manifest.json"), JSON.stringify(manifest, null, 2) + "\n");
 
 console.log(
   `built ${path.relative(process.cwd(), dist)}: ${(total / 1024).toFixed(1)} KiB raw, ` +

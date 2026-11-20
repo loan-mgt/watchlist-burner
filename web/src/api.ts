@@ -92,6 +92,33 @@ async function burnJSON(opts: BurnOptions): Promise<void> {
   opts.onFrame({ type: "result", films: body.films, meta });
 }
 
+export interface SeerrInstance {
+  url: string;
+  version?: string;
+  verified?: boolean;
+}
+
+export interface SeerrDiscovery {
+  instances: SeerrInstance[];
+  cached: boolean;
+}
+
+/**
+ * Asks the backend to probe the conventional Seerr host names under the
+ * Jellyfin server's domain. Seerr has no CORS headers, so this cannot run in
+ * the browser.
+ */
+export async function discoverSeerr(jellyfinUrl: string, signal?: AbortSignal): Promise<SeerrDiscovery> {
+  const res = await fetch("/api/seerr/discover", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ jellyfinUrl }),
+    signal,
+  });
+  if (!res.ok) throw await toApiError(res);
+  return (await res.json()) as SeerrDiscovery;
+}
+
 /** Resolves a poster through the backend's Letterboxd cache. */
 export async function resolvePoster(slug: string, signal?: AbortSignal): Promise<string> {
   try {
